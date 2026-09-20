@@ -1,0 +1,765 @@
+docker run -d --name some-clickhouse-server --ulimit nofile=262144:262144 clickhouse
+
+docker run -d --name some-clickhouse-server --ulimit nofile=262144:262144 -e CLICKHOUSE_PASSWORD=changeme -p 8123:8123 -p 9000:9000 -p 9009:9009 -v .:/local clickhouse
+
+echo 'SELECT version()' | curl 'http://localhost:8123/' --data-binary @-
+
+curl "http://localhost:8123/?password=changeme" --data-binary "SELECT version()"
+
+
+/etc/clickhouse-server/config.d/*.xml - files with server configuration adjustments
+/etc/clickhouse-server/users.d/*.xml - files with user settings adjustments
+/docker-entrypoint-initdb.d/ - folder with database initialization scripts (see below).
+
+https://business.juso.go.kr/jst/jstAddressDetailsSearch
+
+도로명주소 한글 스키마
+
+1	도로명주소관리번호	26	문자	PK1	
+2	법정동코드	10	문자		
+3	시도명	40	문자		
+4	시군구명	40	문자		
+5	법정읍면동명	40	문자		
+6	법정리명	40	문자		
+7	산여부	1	문자		0:대지, 1:산
+8	지번본번(번지)	4	숫자		
+9	지번부번(호)	4	숫자		
+10	도로명코드	12	문자	PK2	시군구코드(5)+도로명번호(7)
+11	도로명	80	문자		
+12	지하여부	1	문자	PK3	0:지상, 1:지하, 2:공중, 3:수상
+13	건물본번	5	숫자	PK4	
+14	건물부번	5	숫자	PK5	
+15	행정동코드	60	문자		참고용
+16	행정동명	60	문자		참고용
+17	기초구역번호(우편번호)	5	문자		
+18	이전도로명주소	400	문자		
+19	효력발생일	8	문자		
+20	공동주택구분	1	문자		
+21	이동사유코드	2	문자		31:신규, 34:수정, 63:폐지
+22	건축물대장건물명	400	문자		
+23	시군구용건물명	400	문자		
+24	비고	200	문자		
+
+
+CREATE TABLE juso_master
+(
+    road_address_id String COMMENT '도로명주소관리번호',
+    bjdong_code String COMMENT '법정동코드',
+    sido String COMMENT '시도명',
+    sigungu String COMMENT '시군구명',
+    bjdong_name String COMMENT '법정읍면동명',
+    ri_name String COMMENT '법정리명',
+    is_mountain String COMMENT '산여부 (0:대지, 1:산)',
+    jibun_main UInt32 COMMENT '지번본번(번지)',
+    jibun_sub UInt32 COMMENT '지번부번(호)',
+    road_code String COMMENT '도로명코드',
+    road_name String COMMENT '도로명',
+    is_underground String COMMENT '지하여부 (0:지상, 1:지하, 2:공중, 3:수상)',
+    building_main UInt32 COMMENT '건물본번',
+    building_sub UInt32 COMMENT '건물부번',
+    hjdong_code String COMMENT '행정동코드',
+    hjdong_name String COMMENT '행정동명',
+    zip_code String COMMENT '기초구역번호(우편번호)',
+    prev_road_address String COMMENT '이전도로명주소',
+    effective_date String COMMENT '효력발생일',
+    apartment_type String COMMENT '공동주택구분',
+    move_reason_code String COMMENT '이동사유코드',
+    building_name_register String COMMENT '건축물대장건물명',
+    building_name_sigungu String COMMENT '시군구용건물명',
+    remarks String COMMENT '비고',
+
+    -- 도로명과 지번 주소 형태를 모두 담는 통합 검색 컬럼
+    -- 예: "서울 강남구 역삼동 테헤란로 152 역삼동 737 강남파이낸스센터" 형태로 자동 빌드됨
+    full_address String MATERIALIZED concat(
+        sido, ' ', 
+        sigungu, ' ', 
+        -- 1) 도로명 주소 형태 붙이기
+        road_name, ' ', toString(building_main), if(building_sub > 0, concat('-', toString(building_sub)), ''), ' ',
+        -- 2) 지번 주소 형태 붙이기 (읍면동 + 번지-호)
+        bjdong_name, if(ri_name != '', concat(' ', ri_name), ''), ' ',
+        if(is_mountain = '1', '산 ', ''),
+        toString(jibun_main), if(jibun_sub > 0, concat('-', toString(jibun_sub)), ''),
+        -- 3) 건물명 붙이기
+        if(building_name_sigungu = '', '', concat(' ', building_name_sigungu))
+    ) COMMENT '도로명+지번 통합 검색용 텍스트',
+
+    -- 고속 텍스트 검색을 위한 역인덱스
+    INDEX idx_full_address(full_address) TYPE text(tokenizer = 'splitByNonAlpha') GRANULARITY 1
+)
+ENGINE = MergeTree
+ORDER BY (sido, sigungu, bjdong_name, road_name, road_address_id);
+
+
+
+cd 20*
+
+ls -al
+
+-rwxrwxrwx 1 root root  44959130 Sep 18 14:11 rnaddrkor_busan.txt
+-rwxrwxrwx 1 root root  50867895 Sep 18 14:11 rnaddrkor_chungbuk.txt
+-rwxrwxrwx 1 root root  74010535 Sep 18 14:11 rnaddrkor_chungnam.txt
+-rwxrwxrwx 1 root root  33466885 Sep 18 14:11 rnaddrkor_daegu.txt
+-rwxrwxrwx 1 root root  16330571 Sep 18 14:11 rnaddrkor_daejeon.txt
+-rwxrwxrwx 1 root root  56397146 Sep 18 14:11 rnaddrkor_gangwon.txt
+-rwxrwxrwx 1 root root 106251675 Sep 18 14:11 rnaddrkor_gyeongbuk.txt
+-rwxrwxrwx 1 root root  97572521 Sep 18 14:11 rnaddrkor_gyeongnam.txt
+-rwxrwxrwx 1 root root 153792267 Sep 18 14:11 rnaddrkor_gyunggi.txt
+-rwxrwxrwx 1 root root  27957414 Sep 18 14:11 rnaddrkor_incheon.txt
+-rwxrwxrwx 1 root root  24329188 Sep 18 14:11 rnaddrkor_jeju.txt
+-rwxrwxrwx 1 root root  66972173 Sep 18 14:11 rnaddrkor_jeonbuk.txt
+-rwxrwxrwx 1 root root 112497793 Sep 18 14:11 rnaddrkor_jeonnamgwangju.txt
+-rwxrwxrwx 1 root root   4120439 Sep 18 14:11 rnaddrkor_sejong.txt
+-rwxrwxrwx 1 root root  78813086 Sep 18 14:11 rnaddrkor_seoul.txt
+-rwxrwxrwx 1 root root  15272963 Sep 18 14:11 rnaddrkor_ulsan.txt
+
+
+mkdir tr
+
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/rnaddrkor_busan.txt | tr -d '\r' > tr/rnaddrkor_busan.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/rnaddrkor_chungbuk.txt | tr -d '\r' > tr/rnaddrkor_chungbuk.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/rnaddrkor_chungnam.txt | tr -d '\r' > tr/rnaddrkor_chungnam.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/rnaddrkor_daegu.txt | tr -d '\r' > tr/rnaddrkor_daegu.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/rnaddrkor_daejeon.txt | tr -d '\r' > tr/rnaddrkor_daejeon.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/rnaddrkor_gangwon.txt | tr -d '\r' > tr/rnaddrkor_gangwon.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/rnaddrkor_gyeongbuk.txt | tr -d '\r' > tr/rnaddrkor_gyeongbuk.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/rnaddrkor_gyeongnam.txt | tr -d '\r' > tr/rnaddrkor_gyeongnam.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/rnaddrkor_gyunggi.txt | tr -d '\r' > tr/rnaddrkor_gyunggi.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/rnaddrkor_incheon.txt | tr -d '\r' > tr/rnaddrkor_incheon.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/rnaddrkor_jeju.txt | tr -d '\r' > tr/rnaddrkor_jeju.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/rnaddrkor_jeonbuk.txt | tr -d '\r' > tr/rnaddrkor_jeonbuk.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/rnaddrkor_jeonnamgwangju.txt | tr -d '\r' > tr/rnaddrkor_jeonnamgwangju.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/rnaddrkor_sejong.txt | tr -d '\r' > tr/rnaddrkor_sejong.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/rnaddrkor_seoul.txt | tr -d '\r' > tr/rnaddrkor_seoul.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/rnaddrkor_ulsan.txt | tr -d '\r' > tr/rnaddrkor_ulsan.txt
+
+
+
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < rnaddrkor_busan.txt
+
+
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < tr/_rnaddrkor_busan.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < tr/_rnaddrkor_chungbuk.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < tr/_rnaddrkor_chungnam.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < tr/_rnaddrkor_daegu.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < tr/_rnaddrkor_daejeon.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < tr/_rnaddrkor_gangwon.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < tr/_rnaddrkor_gyeongbuk.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < tr/_rnaddrkor_gyeongnam.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < tr/_rnaddrkor_gyunggi.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < tr/_rnaddrkor_incheon.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < tr/_rnaddrkor_jeju.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < tr/_rnaddrkor_jeonbuk.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < tr/_rnaddrkor_jeonnamgwangju.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < tr/_rnaddrkor_sejong.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < tr/_rnaddrkor_seoul.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, road_name, is_underground, building_main, building_sub, hjdong_code, hjdong_name, zip_code, prev_road_address, effective_date, apartment_type, move_reason_code, building_name_register, building_name_sigungu, remarks) FORMAT CSV" < tr/_rnaddrkor_ulsan.txt
+
+
+SELECT 
+    sido, sigungu, road_name, building_main, building_sub, 
+    bjdong_name, jibun_main, jibun_sub, building_name_sigungu
+FROM juso_master 
+-- ['테헤란로', '152'] 두 토큰이 모두 full_address 인덱스에 있는 행을 초고속 스캔
+WHERE hasAllTokens(full_address, ['테헤란로', '152'])
+LIMIT 20;
+
+
+SELECT 
+    sido, sigungu, road_name, building_main, building_sub, 
+    bjdong_name, jibun_main, jibun_sub, building_name_sigungu
+FROM juso_master 
+WHERE hasAllTokens(full_address, ['장제로156번길'])
+LIMIT 20;
+
+
+
+SELECT 
+    sido, sigungu, road_name, building_main, building_sub,
+    bjdong_name, jibun_main, jibun_sub, building_name_sigungu,
+    -- 매칭 정확도 점수 (정확히 일치하는 항목을 위로 올리기 위함)
+    (if(road_name = '테헤란로', 10, 0) + if(building_name_sigungu LIKE '%강남%', 5, 0)) AS score
+FROM juso_master 
+WHERE (
+    -- 1순위: 쪼개진 단어가 역인덱스에 완벽 매칭되는지 (초고속)
+    hasAllTokens(full_address, ['테헤란로', '152'])
+) 
+OR (
+    -- 2순위: 인덱스를 못 타는 부분 불일치 단어는 LIKE 패턴 매칭으로 보완
+    road_name LIKE '테헤%' AND full_address LIKE '%152%'
+)
+ORDER BY score DESC, road_name ASC 
+LIMIT 30;
+
+
+
+
+SELECT 
+    sido, sigungu, road_name, building_main, building_sub,
+    bjdong_name, jibun_main, jibun_sub, building_name_sigungu,
+    -- 매칭 정확도 점수 (정확히 일치하는 항목을 위로 올리기 위함)
+    (if(road_name = '장제로156번길', 10, 0) + if(building_name_sigungu LIKE '%대림아파트%', 5, 0)) AS score
+FROM juso_master 
+WHERE (
+    -- 1순위: 쪼개진 단어가 역인덱스에 완벽 매칭되는지 (초고속)
+    hasAllTokens(full_address, ['장제로156번길', '대림아파트'])
+) 
+OR (
+    -- 2순위: 인덱스를 못 타는 부분 불일치 단어는 LIKE 패턴 매칭으로 보완
+    road_name LIKE '장제로156번길%' AND full_address LIKE '%대림아파트%'
+)
+ORDER BY score DESC, road_name ASC 
+LIMIT 30;
+
+
+
+
+1	도로명주소관리번호	26	문자	PK1	
+2	법정동코드	10	문자	PK2	
+3	시도명	40	문자		
+4	시군구명	40	문자		
+5	법정읍면동명	40	문자		
+6	법정리명	40	문자		
+7	산여부	1	문자	PK3	0:대지, 1:산
+8	지번본번(번지)	4	숫자	PK4	
+9	지번부번(호)	4	숫자	PK5	
+10	도로명코드	12	문자		시군구코드(5)+도로명번호(7)
+11	지하여부	1	문자		0:지상, 1:지하, 2:공중, 3:수상
+12	건물본번	5	숫자		
+13	건물부번	5	숫자		
+14	이동사유코드	2	문자		31:신규, 34:수정, 63:폐지
+
+
+
+CREATE TABLE juso_jibun_master
+(
+    road_address_id String COMMENT '도로명주소관리번호',
+    bjdong_code String COMMENT '법정동코드',
+    sido String COMMENT '시도명',
+    sigungu String COMMENT '시군구명',
+    bjdong_name String COMMENT '법정읍면동명',
+    ri_name String COMMENT '법정리명',
+    is_mountain String COMMENT '산여부 (0:대지, 1:산)',
+    jibun_main UInt32 COMMENT '지번본번(번지)',
+    jibun_sub UInt32 COMMENT '지번부번(호)',
+    road_code String COMMENT '도로명코드',
+    is_underground String COMMENT '지하여부 (0:지상, 1:지하, 2:공중, 3:수상)',
+    building_main UInt32 COMMENT '건물본번',
+    building_sub UInt32 COMMENT '건물부번',
+    move_reason_code String COMMENT '이동사유코드',
+
+    -- 고속 텍스트 검색을 위한 가상 통합 컬럼 (자동 생성)
+    -- "부산광역시 중구 영주동 60-18" 형태로 자동 조합됨
+    full_address String MATERIALIZED concat(
+        sido, ' ', 
+        sigungu, ' ', 
+        bjdong_name, if(ri_name != '', concat(' ', ri_name), ''), ' ',
+        if(is_mountain = '1', '산 ', ''),
+        toString(jibun_main), if(jibun_sub > 0, concat('-', toString(jibun_sub)), '')
+    ) COMMENT '지번 통합 검색용 텍스트',
+
+    -- 초성 검색용 컬럼 
+    -- INSERT 시점에 백엔드가 초성(예: "ㅂㅅㄱㅇㅅ ㅈㄱ ㅇㅈㄷ 60-18")을 가공해서 입력해주는 컬럼
+    full_address_chosung String DEFAULT '' COMMENT '초성 통합 검색용 텍스트',
+
+    -- 전문 검색(역인덱스) 설정 (일반 텍스트와 초성 텍스트 각각 인덱싱)
+    INDEX idx_full_address(full_address) TYPE text(tokenizer = 'splitByNonAlpha') GRANULARITY 1,
+    INDEX idx_chosung(full_address_chosung) TYPE text(tokenizer = 'splitByNonAlpha') GRANULARITY 1
+)
+ENGINE = MergeTree
+ORDER BY (sido, sigungu, bjdong_code, is_mountain, jibun_main, jibun_sub, road_address_id);
+
+
+
+
+mkdir jibun
+
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/jibun_rnaddrkor_busan.txt | tr -d '\r' > jibun/jibun_rnaddrkor_busan.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/jibun_rnaddrkor_chungbuk.txt | tr -d '\r' > jibun/jibun_rnaddrkor_chungbuk.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/jibun_rnaddrkor_chungnam.txt | tr -d '\r' > jibun/jibun_rnaddrkor_chungnam.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/jibun_rnaddrkor_daegu.txt | tr -d '\r' > jibun/jibun_rnaddrkor_daegu.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/jibun_rnaddrkor_daejeon.txt | tr -d '\r' > jibun/jibun_rnaddrkor_daejeon.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/jibun_rnaddrkor_gangwon.txt | tr -d '\r' > jibun/jibun_rnaddrkor_gangwon.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/jibun_rnaddrkor_gyeongbuk.txt | tr -d '\r' > jibun/jibun_rnaddrkor_gyeongbuk.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/jibun_rnaddrkor_gyeongnam.txt | tr -d '\r' > jibun/jibun_rnaddrkor_gyeongnam.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/jibun_rnaddrkor_gyunggi.txt | tr -d '\r' > jibun/jibun_rnaddrkor_gyunggi.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/jibun_rnaddrkor_incheon.txt | tr -d '\r' > jibun/jibun_rnaddrkor_incheon.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/jibun_rnaddrkor_jeju.txt | tr -d '\r' > jibun/jibun_rnaddrkor_jeju.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/jibun_rnaddrkor_jeonbuk.txt | tr -d '\r' > jibun/jibun_rnaddrkor_jeonbuk.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/jibun_rnaddrkor_jeonnamgwangju.txt | tr -d '\r' > jibun/jibun_rnaddrkor_jeonnamgwangju.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/jibun_rnaddrkor_sejong.txt | tr -d '\r' > jibun/jibun_rnaddrkor_sejong.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/jibun_rnaddrkor_seoul.txt | tr -d '\r' > jibun/jibun_rnaddrkor_seoul.txt
+iconv -f cp949 -t utf-8 '202608_도로명주소 한글_전체분'/jibun_rnaddrkor_ulsan.txt | tr -d '\r' > jibun/jibun_rnaddrkor_ulsan.txt
+
+
+
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < rnaddrkor_busan.txt
+
+
+
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < jibun/jibun_rnaddrkor_busan.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < jibun/jibun_rnaddrkor_chungbuk.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < jibun/jibun_rnaddrkor_chungnam.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < jibun/jibun_rnaddrkor_daegu.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < jibun/jibun_rnaddrkor_daejeon.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < jibun/jibun_rnaddrkor_gangwon.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < jibun/jibun_rnaddrkor_gyeongbuk.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < jibun/jibun_rnaddrkor_gyeongnam.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < jibun/jibun_rnaddrkor_gyunggi.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < jibun/jibun_rnaddrkor_incheon.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < jibun/jibun_rnaddrkor_jeju.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < jibun/jibun_rnaddrkor_jeonbuk.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < jibun/jibun_rnaddrkor_jeonnamgwangju.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < jibun/jibun_rnaddrkor_sejong.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < jibun/jibun_rnaddrkor_seoul.txt
+clickhouse-client -d default --progress=on --format_csv_delimiter="|" --format_csv_allow_single_quotes=0 --format_csv_allow_double_quotes=0 --query="INSERT INTO juso_jibun_master (road_address_id, bjdong_code, sido, sigungu, bjdong_name, ri_name, is_mountain, jibun_main, jibun_sub, road_code, is_underground, building_main, building_sub, move_reason_code) FORMAT CSV" < jibun/jibun_rnaddrkor_ulsan.txt
+
+
+
+
+clickhouse-client -d default
+
+select count(*) as cnt from juso_master;
+1. │ 6423859 │ -- 6.42 million
+
+select count(*) as cnt from juso_jibun_master;
+1. │ 1770558 │ -- 1.77 million
+
+select count(*) as cnt from juso_master jm, juso_jibun_master jjm where jm.road_address_id=jjm.road_address_id;
+1. │ 1770558 │ -- 1.77 million
+
+select count(*) as cnt from juso_master jm, juso_jibun_master jjm where jm.road_address_id=jjm.road_address_id and jm.bjdong_code<>jjm.bjdong_code;
+1. │ 28541 │
+
+select jm.*, jjm.* from juso_master jm, juso_jibun_master jjm where jm.road_address_id=jjm.road_address_id and jm.bjdong_code<>jjm.bjdong_code limit 1;
+
+Row 1:
+──────
+road_address_id:        51150340446043400002300002
+bjdong_code:            5115034022
+sido:                   강원특별자치도
+sigungu:                강릉시
+bjdong_name:            강동면
+ri_name:                모전리
+is_mountain:            0
+jibun_main:             484
+jibun_sub:              3
+road_code:              511504460434
+road_name:              범울재길
+is_underground:         0
+building_main:          23
+building_sub:           2
+hjdong_code:            5115034000
+hjdong_name:            강동면
+zip_code:               25627
+prev_road_address:      
+effective_date:         20230611
+apartment_type:         0
+move_reason_code:       
+building_name_register: 
+building_name_sigungu:  
+remarks:                
+jjm.road_address_id:    51150340446043400002300002
+jjm.bjdong_code:        5115034021
+jjm.sido:               강원특별자치도
+jjm.sigungu:            강릉시
+jjm.bjdong_name:        강동면
+jjm.ri_name:            상시동리
+jjm.is_mountain:        0
+jjm.jibun_main:         614
+jjm.jibun_sub:          2
+jjm.road_code:          511504460434
+jjm.is_underground:     0
+jjm.building_main:      23
+jjm.building_sub:       2
+jjm.move_reason_code:   
+full_address_chosung:
+
+select jm.full_address, jjm.full_address from juso_master jm, juso_jibun_master jjm where jm.road_address_id=jjm.road_address_id and jm.bjdong_code<>jjm.bjdong_code limit 1;
+
+
+SELECT A.zip_code as "기초구역번호",
+A.road_address_id as "도로명주소관리번호", A.bjdong_code as "법정동코드", A.sido as "시도명", A.sigungu as "시군구명",
+A.bjdong_name as "읍면동명", A.ri_name as "리명", A.is_mountain as "산여부", A.road_code as "도로명코드", A.road_name as "도로명",
+A.jibun_main as "지번본번", A.jibun_sub as "지번부번", A.apartment_type as "공동주택여부", A.building_name_register as "건물대장건물명",
+A.is_underground as "지하여부", A.building_main as "건물본번", A.building_sub as "건물부번", A.building_name_sigungu as "건물명"
+FROM juso_master A
+WHERE hasAllTokens(A.full_address, ['상시동리', '614', '2'])
+union all
+Select A.zip_code as "기초구역번호",
+X.road_address_id as "도로명주소관리번호", X.bjdong_code as "법정동코드", X.sido as "시도명", X.sigungu as "시군구명",
+X.bjdong_name as "읍면동명", X.ri_name as "리명", X.is_mountain as "산여부", A.road_code as "도로명코드", A.road_name as "도로명",
+X.jibun_main as "지번본번", X.jibun_sub as "지번부번", A.apartment_type as "공동주택여부", A.building_name_register as "건물대장건물명",
+A.is_underground as "지하여부", A.building_main as "건물본번", A.building_sub as "건물부번", A.building_name_sigungu as "건물명"
+From juso_master A, juso_jibun_master X
+Where A.road_address_id = X.road_address_id and hasAllTokens(X.full_address, ['상시동리', '614', '2'])
+
+select X.full_address from juso_jibun_master X
+where hasAllTokens(X.full_address, ['상시동리']);
+
+select X.full_address from juso_jibun_master X
+where hasAllTokens(X.full_address, ['상시동리', '614-2']);
+
+select X.full_address from juso_jibun_master X
+where hasAllTokens(X.full_address, ['상시동리', '614', '2']);
+
+
+select jm.full_address, jjm.full_address from juso_master jm, juso_jibun_master jjm where jm.road_address_id=jjm.road_address_id and jm.bjdong_code=jjm.bjdong_code limit 1;
+
+
+SELECT 'A' as gubun, A.zip_code as "기초구역번호",
+A.road_address_id as "도로명주소관리번호", A.bjdong_code as "법정동코드", A.sido as "시도명", A.sigungu as "시군구명",
+A.bjdong_name as "읍면동명", A.ri_name as "리명", A.is_mountain as "산여부", A.road_code as "도로명코드", A.road_name as "도로명",
+A.jibun_main as "지번본번", A.jibun_sub as "지번부번", A.apartment_type as "공동주택여부", A.building_name_register as "건물대장건물명",
+A.is_underground as "지하여부", A.building_main as "건물본번", A.building_sub as "건물부번", A.building_name_sigungu as "건물명"
+FROM juso_master A
+WHERE hasAllTokens(A.full_address, ['도천리', '133'])
+union all
+Select 'B' as gubun, A.zip_code as "기초구역번호",
+X.road_address_id as "도로명주소관리번호", X.bjdong_code as "법정동코드", X.sido as "시도명", X.sigungu as "시군구명",
+X.bjdong_name as "읍면동명", X.ri_name as "리명", X.is_mountain as "산여부", A.road_code as "도로명코드", A.road_name as "도로명",
+X.jibun_main as "지번본번", X.jibun_sub as "지번부번", A.apartment_type as "공동주택여부", A.building_name_register as "건물대장건물명",
+A.is_underground as "지하여부", A.building_main as "건물본번", A.building_sub as "건물부번", A.building_name_sigungu as "건물명"
+From juso_master A, juso_jibun_master X
+Where A.road_address_id = X.road_address_id and hasAllTokens(X.full_address, ['도천리', '133'])
+
+
+Select * From juso_jibun_master X
+Where hasAllTokens(X.full_address, ['도천리', '133'])
+
+Select * From juso_jibun_master X
+Where X.ri_name='도천리' and X.jibun_main='133'
+
+Select * From juso_master X
+Where hasAllTokens(X.full_address, ['도천리', '133'])
+
+Select X.*, X.full_address From juso_master X
+Where X.ri_name='도천리' and X.jibun_main='133'
+
+
+ALTER TABLE juso_master 
+MODIFY COLUMN full_address String MATERIALIZED concat(
+    sido, ' ', sigungu, ' ', bjdong_name, ' ', 
+    if(ri_name != '', concat(ri_name, ' '), ''),
+    road_name, ' ', toString(building_main), if(building_sub > 0, concat('-', toString(building_sub)), ''), ' ',
+    bjdong_name, ' ', if(ri_name != '', concat(ri_name, ' '), ''),
+    toString(jibun_main), if(jibun_sub > 0, concat('-', toString(jibun_sub)), ''), ' ',
+    building_name_sigungu
+);
+-- 기존 데이터의 full_address 값을 새 수식에 맞춰 디스크에 다시 씁니다.
+ALTER TABLE juso_master MATERIALIZE COLUMN full_address;
+
+-- full_address가 새로 쓰였으므로, 역인덱스도 다시 빌드합니다.
+ALTER TABLE juso_master MATERIALIZE INDEX idx_full_address;
+
+
+
+SELECT
+    X.*,
+    X.full_address
+FROM juso_master AS X
+WHERE (X.ri_name = '도천리') AND (X.jibun_main = '133')
+
+Query id: 1a88a241-c4e1-4eaf-93a8-edc240f87e17
+
+Row 1:
+──────
+road_address_id:        47770320475446800001600004
+bjdong_code:            4777032043
+sido:                   경상북도
+sigungu:                영덕군
+bjdong_name:            남정면
+ri_name:                도천리
+is_mountain:            0
+jibun_main:             133
+jibun_sub:              0
+road_code:              477704754468
+road_name:              도천길
+is_underground:         0
+building_main:          16
+building_sub:           4
+hjdong_code:            4777032000
+hjdong_name:            남정면
+zip_code:               36462
+prev_road_address:      
+effective_date:         20110729
+apartment_type:         0
+move_reason_code:       
+building_name_register: 
+building_name_sigungu:  
+remarks:                
+full_address:           경상북도 영덕군 남정면 도천리 도천길 16-4 남정면 도천리 133 
+
+1 row in set. Elapsed: 0.012 sec. Processed 8.19 thousand rows, 2.31 MB (707.01 thousand rows/s., 199.47 MB/s.)
+Peak memory usage: 11.09 MiB.
+
+
+SELECT *
+FROM juso_master AS X
+WHERE hasAllTokens(X.full_address, ['도천리', '133'])
+
+Query id: f54299cc-53f1-420a-9130-b476619b7aaf
+
+Ok.
+
+0 rows in set. Elapsed: 0.008 sec.
+
+
+
+-- 1. 테이블의 모든 파트를 즉시 강제로 합치면서 인덱스를 100% 새로 빌드합니다.
+OPTIMIZE TABLE juso_master FINAL;
+
+-- 2. 인덱스 재빌드 작업이 완료되었는지 확인 (결과가 아무것도 안 나와야 완벽히 끝난 것입니다)
+SELECT *
+FROM system.mutations 
+WHERE table = 'juso_master' AND is_done = 0;
+
+SELECT *
+FROM system.mutations 
+WHERE table = 'juso_master';
+
+
+-- 1. full_address 컬럼용 역인덱스 파일을 강제로 완전히 새로 작성(Materialize)합니다.
+ALTER TABLE juso_master MATERIALIZE INDEX idx_full_address;
+
+-- 2. ClickHouse가 쪼개져 있는 데이터 파트(Part)들을 물리적으로 즉시 병합하도록 강제합니다.
+-- 이 과정에서 새롭게 갱신된 인덱스 파일들이 하나로 완벽히 합쳐집니다.
+OPTIMIZE TABLE juso_master FINAL;
+
+
+
+ALTER TABLE juso_master DROP INDEX idx_full_address;
+
+-- 한글 단어 경계와 공백을 완벽하게 인식하는 인덱스 생성
+ALTER TABLE juso_master ADD INDEX idx_full_address(full_address) TYPE text(tokenizer = 'asciiCJK') GRANULARITY 1;
+
+-- 1) 새 인덱스 규칙대로 디스크 파일 갱신
+ALTER TABLE juso_master MATERIALIZE INDEX idx_full_address;
+
+-- 2) 완벽한 물리적 결합 강제 실행
+OPTIMIZE TABLE juso_master FINAL;
+
+SELECT *
+FROM system.mutations 
+WHERE table = 'juso_master';
+
+SELECT *
+FROM juso_master AS X
+WHERE hasAllTokens(X.full_address, ['도천리', '133'])
+
+SELECT 
+    full_address,
+    -- ClickHouse가 내부적으로 인덱스를 만들 때 추출하는 실제 토큰 목록
+    tokens(full_address) AS "실제_등록된_토큰들"
+FROM juso_master
+WHERE ri_name = '도천리' AND jibun_main = '133';
+
+SELECT X.full_address
+FROM juso_master AS X
+WHERE hasAllToken(X.full_address, '도천리') and hasAllToken(X.full_address, '133');
+
+
+
+
+
+ALTER TABLE juso_master 
+MODIFY COLUMN full_address String MATERIALIZED concat(
+    sido
+    , ' ', sigungu
+    , ' ', bjdong_name
+    , ' ', road_name
+    , ' ', toString(building_main)
+    , if(building_sub > 0, concat('-', toString(building_sub)), '')
+    , if(ri_name != '', concat(' ', ri_name), '')
+    , ' ', toString(jibun_main)
+    , if(jibun_sub > 0, concat('-', toString(jibun_sub)), '')
+    , if(building_name_sigungu != '', concat(' ', building_name_sigungu), '')
+);
+-- 기존 데이터의 full_address 값을 새 수식에 맞춰 디스크에 다시 씁니다.
+ALTER TABLE juso_master MATERIALIZE COLUMN full_address;
+
+ALTER TABLE juso_master DROP INDEX idx_full_address;
+
+-- 한글 단어 경계와 공백을 완벽하게 인식하는 인덱스 생성
+ALTER TABLE juso_master ADD INDEX idx_full_address(full_address) TYPE text(tokenizer = 'asciiCJK') GRANULARITY 1;
+
+-- 1) 새 인덱스 규칙대로 디스크 파일 갱신
+ALTER TABLE juso_master MATERIALIZE INDEX idx_full_address;
+
+-- 2) 완벽한 물리적 결합 강제 실행
+OPTIMIZE TABLE juso_master FINAL;
+
+SELECT *
+FROM system.mutations 
+WHERE table = 'juso_master';
+
+SELECT *
+FROM juso_master AS X
+WHERE hasAllTokens(X.full_address, ['도천리', '133'])
+
+SELECT 
+    full_address,
+    -- ClickHouse가 내부적으로 인덱스를 만들 때 추출하는 실제 토큰 목록
+    tokens(full_address) AS "실제_등록된_토큰들"
+FROM juso_master
+WHERE ri_name = '도천리' AND jibun_main = '133';
+
+SELECT X.full_address
+FROM juso_master AS X
+WHERE hasToken(X.full_address, '도천리') and hasToken(X.full_address, '133');
+
+select count(*) as cnt from juso_master where building_name_sigungu='';
+
+
+
+그냥 새로 만들기
+
+CREATE TABLE juso_master1
+(
+    road_address_id String COMMENT '도로명주소관리번호',
+    bjdong_code String COMMENT '법정동코드',
+    sido String COMMENT '시도명',
+    sigungu String COMMENT '시군구명',
+    bjdong_name String COMMENT '법정읍면동명',
+    ri_name String COMMENT '법정리명',
+    is_mountain String COMMENT '산여부 (0:대지, 1:산)',
+    jibun_main UInt32 COMMENT '지번본번(번지)',
+    jibun_sub UInt32 COMMENT '지번부번(호)',
+    road_code String COMMENT '도로명코드',
+    road_name String COMMENT '도로명',
+    is_underground String COMMENT '지하여부 (0:지상, 1:지하, 2:공중, 3:수상)',
+    building_main UInt32 COMMENT '건물본번',
+    building_sub UInt32 COMMENT '건물부번',
+    hjdong_code String COMMENT '행정동코드',
+    hjdong_name String COMMENT '행정동명',
+    zip_code String COMMENT '기초구역번호(우편번호)',
+    prev_road_address String COMMENT '이전도로명주소',
+    effective_date String COMMENT '효력발생일',
+    apartment_type String COMMENT '공동주택구분',
+    move_reason_code String COMMENT '이동사유코드',
+    building_name_register String COMMENT '건축물대장건물명',
+    building_name_sigungu String COMMENT '시군구용건물명',
+    remarks String COMMENT '비고',
+
+    -- 도로명과 지번 주소 형태를 모두 담는 통합 검색 컬럼
+    -- 예: "서울 강남구 역삼동 테헤란로 152 역삼동 737 강남파이낸스센터" 형태로 자동 빌드됨
+    full_address String MATERIALIZED concat(
+        sido, ' ', 
+        sigungu, ' ', 
+        bjdong_name, ' ',
+        road_name, ' ', 
+        toString(building_main), if(building_sub > 0, concat('-', toString(building_sub)), ''),
+        if(building_name_sigungu = '', '', concat(' ', building_name_sigungu))
+    ) COMMENT '도로명 검색용 텍스트',
+    full_address1 String MATERIALIZED concat(
+        sido, ' ', 
+        sigungu, ' ', 
+        bjdong_name, if(ri_name != '', concat(' ', ri_name), ''), ' ',
+        if(is_mountain = '1', '산 ', ''),
+        toString(jibun_main), if(jibun_sub > 0, concat('-', toString(jibun_sub)), ''),
+        if(building_name_sigungu = '', '', concat(' ', building_name_sigungu))
+    ) COMMENT '지번 검색용 텍스트',
+
+    -- 고속 텍스트 검색을 위한 역인덱스
+    INDEX idx_full_address(full_address) TYPE text(tokenizer = 'splitByNonAlpha') GRANULARITY 1,
+    INDEX idx_full_address1(full_address1) TYPE text(tokenizer = 'splitByNonAlpha') GRANULARITY 1
+)
+ENGINE = MergeTree
+ORDER BY (sido, sigungu, bjdong_name, road_name, road_address_id);
+
+insert into juso_master1 select * from juso_master;
+
+
+SELECT *
+FROM juso_master1 AS X
+WHERE hasAllTokens(X.full_address, ['도천리', '133']) or hasAllTokens(X.full_address1, ['도천리', '133'])
+
+
+
+
+SELECT 'A' as gubun, A.zip_code as "기초구역번호",
+A.road_address_id as "도로명주소관리번호", A.bjdong_code as "법정동코드", A.sido as "시도명", A.sigungu as "시군구명",
+A.bjdong_name as "읍면동명", A.ri_name as "리명", A.is_mountain as "산여부", A.road_code as "도로명코드", A.road_name as "도로명",
+A.jibun_main as "지번본번", A.jibun_sub as "지번부번", A.apartment_type as "공동주택여부", A.building_name_register as "건물대장건물명",
+A.is_underground as "지하여부", A.building_main as "건물본번", A.building_sub as "건물부번", A.building_name_sigungu as "건물명"
+FROM juso_master1 A
+WHERE hasAllTokens(A.full_address, ['도천리', '133']) or hasAllTokens(A.full_address1, ['도천리', '133'])
+union all
+Select 'B' as gubun, A.zip_code as "기초구역번호",
+X.road_address_id as "도로명주소관리번호", X.bjdong_code as "법정동코드", X.sido as "시도명", X.sigungu as "시군구명",
+X.bjdong_name as "읍면동명", X.ri_name as "리명", X.is_mountain as "산여부", A.road_code as "도로명코드", A.road_name as "도로명",
+X.jibun_main as "지번본번", X.jibun_sub as "지번부번", A.apartment_type as "공동주택여부", A.building_name_register as "건물대장건물명",
+A.is_underground as "지하여부", A.building_main as "건물본번", A.building_sub as "건물부번", A.building_name_sigungu as "건물명"
+From juso_jibun_master X
+inner join juso_master1 A on A.road_address_id = X.road_address_id and hasAllTokens(X.full_address, ['도천리', '133'])
+;
+
+
+SELECT 'A' as gubun, A.full_address, A.full_address1
+FROM juso_master1 A
+WHERE hasAllTokens(A.full_address, ['도천리', '133']) or hasAllTokens(A.full_address1, ['도천리', '133'])
+union all
+Select 'B' as gubun, X.full_address, '' as full_address1
+From juso_jibun_master X
+inner join juso_master1 A on A.road_address_id = X.road_address_id and hasAllTokens(X.full_address, ['도천리', '133'])
+
+
+
+
+SELECT 'A' as gubun, A.full_address, A.full_address1
+FROM juso_master1 A
+WHERE hasAllTokens(A.full_address, ['장제로156번길', '25']) or hasAllTokens(A.full_address1, ['장제로156번길', '25'])
+union all
+Select 'B' as gubun, X.full_address, '' as full_address1
+From juso_jibun_master X
+inner join juso_master1 A on A.road_address_id = X.road_address_id and hasAllTokens(X.full_address, ['장제로156번길', '25'])
+
+
+
+
+SELECT 'A' as gubun, A.full_address, A.full_address1
+FROM juso_master1 A
+WHERE hasAllTokens(A.full_address, ['부평동', '118', '50']) or hasAllTokens(A.full_address1, ['부평동', '118', '50'])
+union all
+Select 'B' as gubun, X.full_address, '' as full_address1
+From juso_jibun_master X
+inner join juso_master1 A on A.road_address_id = X.road_address_id and hasAllTokens(X.full_address, ['부평동', '118', '50'])
+
+
+
+
+Select 'B' as gubun, X.full_address, '' as full_address1
+From juso_jibun_master X
+inner join juso_master1 A on A.road_address_id = X.road_address_id 
+limit 10;
+
+
+
+SELECT 'A' as gubun, A.full_address, A.full_address1
+FROM juso_master1 A
+WHERE hasAllTokens(A.full_address, ['모전리', '376', '1']) or hasAllTokens(A.full_address1, ['모전리', '376', '1'])
+union all
+Select 'B' as gubun, X.full_address, '' as full_address1
+From juso_jibun_master X
+inner join juso_master1 A on A.road_address_id = X.road_address_id and hasAllTokens(X.full_address, ['모전리', '376', '1'])
+
+
+
+
+SELECT 'A' as gubun, A.zip_code as "기초구역번호",
+A.road_address_id as "도로명주소관리번호", A.bjdong_code as "법정동코드", A.sido as "시도명", A.sigungu as "시군구명",
+A.bjdong_name as "읍면동명", A.ri_name as "리명", A.jibun_main as "도로명지번본번", A.jibun_sub as "도로명지번부번",
+A.is_mountain as "산여부", A.road_code as "도로명코드", A.road_name as "도로명",
+A.jibun_main as "지번본번", A.jibun_sub as "지번부번", A.apartment_type as "공동주택여부", A.building_name_register as "건물대장건물명",
+A.is_underground as "지하여부", A.building_main as "건물본번", A.building_sub as "건물부번", A.building_name_sigungu as "건물명"
+FROM juso_master1 A
+WHERE hasAllTokens(A.full_address, ['모전리', '376', '1']) or hasAllTokens(A.full_address1, ['모전리', '376', '1'])
+union all
+Select 'B' as gubun, A.zip_code as "기초구역번호",
+X.road_address_id as "도로명주소관리번호", X.bjdong_code as "법정동코드", X.sido as "시도명", X.sigungu as "시군구명",
+X.bjdong_name as "읍면동명", X.ri_name as "리명", A.jibun_main as "도로명지번본번", A.jibun_sub as "도로명지번부번", 
+X.is_mountain as "산여부", A.road_code as "도로명코드", A.road_name as "도로명",
+X.jibun_main as "지번본번", X.jibun_sub as "지번부번", A.apartment_type as "공동주택여부", A.building_name_register as "건물대장건물명",
+A.is_underground as "지하여부", A.building_main as "건물본번", A.building_sub as "건물부번", A.building_name_sigungu as "건물명"
+From juso_jibun_master X
+inner join juso_master1 A on A.road_address_id = X.road_address_id
+where hasAllTokens(X.full_address, ['모전리', '376', '1'])
