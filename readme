@@ -763,3 +763,7 @@ A.is_underground as "지하여부", A.building_main as "건물본번", A.buildin
 From juso_jibun_master X
 inner join juso_master1 A on A.road_address_id = X.road_address_id
 where hasAllTokens(X.full_address, ['모전리', '376', '1'])
+
+
+
+
